@@ -34,7 +34,8 @@ pip install nonebot-plugin-gspanel-lite
 
 <img width="569" height="675" alt="image" src="https://github.com/user-attachments/assets/f63a6907-dd3c-43e7-bb27-eea529be18bf" />
 
-<img width="1280" height="1600" alt="f2057300831fee73b3fcbea30dd3ff04_720" src="https://github.com/user-attachments/assets/113ff4a3-9bfd-4f29-9f8a-b23e2c8cd2ce" />
+<img width="1700" height="1274" alt="4e8f43db5be95a710fc32cef31c45d6f" src="https://github.com/user-attachments/assets/7e2e7fc1-2d56-422d-990f-b16c7da4af09" />
+
 
 ## 文本回退示例
 
