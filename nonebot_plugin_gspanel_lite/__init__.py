@@ -13,6 +13,7 @@ try:
     from nonebot.log import logger
     from nonebot.matcher import Matcher
     from nonebot.params import ArgPlainText, CommandArg
+    from nonebot.plugin import PluginMetadata
 except ImportError:
     on_command = None
     Bot = None
@@ -23,6 +24,18 @@ except ImportError:
     Matcher = None
     ArgPlainText = None
     CommandArg = None
+    PluginMetadata = None
+
+
+if PluginMetadata is not None:
+    __plugin_meta__ = PluginMetadata(
+        name="GSPanel Lite",
+        description="通过 Enka 查询原神 UID 公开展示信息",
+        usage="发送 /uid <原神UID> 查询原神公开角色展示信息",
+        type="application",
+        homepage="https://github.com/WhyPilotXia/nonebot-plugin-gspanel-lite",
+        supported_adapters={"~onebot.v11"},
+    )
 
 
 DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=20)
@@ -188,55 +201,72 @@ async def getuid(uid: str) -> str:
 
 async def render_enka_page(uid: str) -> bytes:
     from nonebot_plugin_htmlrender import get_new_page
+    from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
 
     uid = uid.strip()
     if not uid:
         raise EnkaQueryError("UID 不能为空。")
 
     async with get_new_page(
-        viewport={"width": 2160, "height": 1800},
-        device_scale_factor=1,
+            viewport={"width": 1700, "height": 1200},
+            device_scale_factor=1,
     ) as page:
-        await page.goto(f"https://enka.network/u/{uid}/", wait_until="networkidle", timeout=30000)
+        try:
+            # "load" 或 "domcontentloaded"比 networkidle 容易达成得多
+            await page.goto(
+                f"https://enka.network/u/{uid}/",
+                wait_until="load",
+                timeout=15000
+            )
+        except PlaywrightTimeoutError:
+            if logger:
+                logger.warning(f"UID {uid} 页面加载超时，尝试强行截图...")
+
+        # 无论成功还是超时，都在这里等 3~4 秒，给残留的异步组件/文字渲染留出时间
         await page.wait_for_timeout(4000)
+
         return await page.screenshot(full_page=True, type="png")
 
 
 if on_command is not None and __name__ != "__main__":
     try:
-        wettr = on_command("uid")
+        uid_matcher = on_command("uid")
 
-        @wettr.handle()
-        async def _handle(matcher: Matcher, city: Message = CommandArg()):
-            if city.extract_plain_text():
-                matcher.set_arg("city", city)
+        @uid_matcher.handle()
+        async def _handle(matcher: Matcher, uid_arg: Message = CommandArg()):
+            if uid_arg.extract_plain_text():
+                matcher.set_arg("uid", uid_arg)
 
-        @wettr.got("city", prompt="你想查询什么原神 UID 呢？")
-        async def _(bot: Bot, event: GroupMessageEvent, city: str = ArgPlainText("city")):
+        @uid_matcher.got("uid", prompt="你想查询哪个原神 UID？")
+        async def _(bot: Bot, event: GroupMessageEvent, uid: str = ArgPlainText("uid")):
             try:
-                await bot.call_api('set_msg_emoji_like', group_id=event.group_id, message_id=event.message_id,
-                                   emoji_id='318',
-                                   set=True)
+                await bot.call_api(
+                    "set_msg_emoji_like",
+                    group_id=event.group_id,
+                    message_id=event.message_id,
+                    emoji_id="318",
+                    set=True,
+                )
             except Exception as e:
                 if logger:
                     logger.warning(e)
 
             try:
-                image = await render_enka_page(city)
-                await wettr.send(MessageSegment.image(image))
+                image = await render_enka_page(uid)
+                await uid_matcher.send(MessageSegment.image(image))
                 return
             except Exception as e:
                 if logger:
                     logger.opt(exception=e).warning("Enka 页面渲染失败，回退到文本解析")
 
-            info = await getuid(uid=city)
-            await wettr.send(info)
+            info = await getuid(uid=uid)
+            await uid_matcher.send(info)
     except ValueError:
-        wettr = None
+        uid_matcher = None
 
 
 async def cli_main() -> None:
-    parser = argparse.ArgumentParser(description="独立测试 Enka 原神 UID 展柜请求和解析。")
+    parser = argparse.ArgumentParser(description="独立测试 Enka 原神 UID 展示请求和解析。")
     parser.add_argument("uid", nargs="?", default="218847690", help="原神 UID，默认 218847690")
     parser.add_argument("--raw", action="store_true", help="输出完整 profile data JSON，包括 avatarInfoList")
     parser.add_argument("--player", action="store_true", help="只输出 playerInfo JSON")
