@@ -8,7 +8,7 @@ from typing import Any, Optional
 import aiohttp
 
 try:
-    from nonebot import on_command
+    from nonebot import on_command, require
     from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
     from nonebot.log import logger
     from nonebot.matcher import Matcher
@@ -16,6 +16,7 @@ try:
     from nonebot.plugin import PluginMetadata
 except ImportError:
     on_command = None
+    require = None
     Bot = None
     GroupMessageEvent = None
     Message = None
@@ -200,8 +201,10 @@ async def getuid(uid: str) -> str:
 
 
 async def render_enka_page(uid: str) -> bytes:
+    if require is not None:
+        require("nonebot_plugin_htmlrender")
+
     from nonebot_plugin_htmlrender import get_new_page
-    from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
 
     uid = uid.strip()
     if not uid:
@@ -218,9 +221,9 @@ async def render_enka_page(uid: str) -> bytes:
                 wait_until="load",
                 timeout=15000
             )
-        except PlaywrightTimeoutError:
+        except Exception as e:
             if logger:
-                logger.warning(f"UID {uid} 页面加载超时，尝试强行截图...")
+                logger.warning(f"{e} UID {uid} 页面加载超时，尝试强行截图...")
 
         # 无论成功还是超时，都在这里等 3~4 秒，给残留的异步组件/文字渲染留出时间
         await page.wait_for_timeout(4000)
