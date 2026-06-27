@@ -11,11 +11,18 @@ from nonebot.matcher import Matcher
 from nonebot.params import ArgPlainText, CommandArg
 from nonebot.plugin import PluginMetadata
 
+require("nonebot_plugin_htmlrender")
+from nonebot_plugin_htmlrender import get_new_page
+
 
 __plugin_meta__ = PluginMetadata(
     name="GSPanel Lite",
-    description="通过 Enka 查询原神 UID 公开展示信息",
-    usage="发送 /uid <原神UID> 查询原神公开角色展示信息",
+    description="通过 Enka 查询原神、崩铁、绝区零、终末地 UID 公开展示信息",
+    usage=(
+        "发送 /uid <UID> 查询原神公开角色展示信息\n"
+        "发送 /uid <原神/崩铁/绝区零/终末地> <UID> 查询指定游戏公开展示信息\n"
+        "也可以使用 /uid <gs/hsr/zzz/ef> <UID>"
+    ),
     type="application",
     homepage="https://github.com/WhyPilotXia/nonebot-plugin-gspanel-lite",
     supported_adapters={"~onebot.v11"},
@@ -31,10 +38,68 @@ HEADERS = {
     ),
     "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
 }
+GAME_URL_PATHS = {
+    "gs": "u",
+    "hsr": "hsr",
+    "zzz": "zzz",
+    "ef": "ef",
+}
+GAME_NAMES = {
+    "gs": "原神",
+    "hsr": "崩铁",
+    "zzz": "绝区零",
+    "ef": "终末地",
+}
+GAME_ALIASES = {
+    "gs": "gs",
+    "原神": "gs",
+    "genshin": "gs",
+    "genshinimpact": "gs",
+    "hsr": "hsr",
+    "崩铁": "hsr",
+    "星铁": "hsr",
+    "崩坏星穹铁道": "hsr",
+    "starrail": "hsr",
+    "zzz": "zzz",
+    "绝区零": "zzz",
+    "zenless": "zzz",
+    "zenlesszonezero": "zzz",
+    "ef": "ef",
+    "终末地": "ef",
+    "endfield": "ef",
+}
 
 
 class EnkaQueryError(Exception):
     pass
+
+
+def parse_uid_query(query: str) -> tuple[str, str]:
+    text = query.strip()
+    if not text:
+        raise EnkaQueryError("UID 不能为空。")
+
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        if parts[0].lower() in GAME_ALIASES:
+            raise EnkaQueryError("UID 不能为空。")
+        return "gs", parts[0]
+
+    game = GAME_ALIASES.get(parts[0].lower())
+    if not game:
+        supported = "原神/崩铁/绝区零/终末地 或 gs/hsr/zzz/ef"
+        raise EnkaQueryError(f"不支持的游戏：{parts[0]}，请使用 {supported}。")
+
+    uid = parts[1].strip()
+    if not uid:
+        raise EnkaQueryError("UID 不能为空。")
+
+    return game, uid
+
+
+def build_enka_url(game: str, uid: str) -> str:
+    path = GAME_URL_PATHS[game]
+    return f"https://enka.network/{path}/{uid}/"
 
 
 async def fetch_text(session: aiohttp.ClientSession, url: str) -> str:
@@ -171,18 +236,18 @@ def format_profile_summary(profile_data: dict[str, Any]) -> str:
     return "\n".join(lines) if lines else "没有可展示的数据。"
 
 
-async def get_profile_data(uid: str) -> dict[str, Any]:
+async def get_profile_data(uid: str, game: str = "gs") -> dict[str, Any]:
     uid = uid.strip()
     if not uid:
         raise EnkaQueryError("UID 不能为空。")
 
     async with aiohttp.ClientSession(timeout=DEFAULT_TIMEOUT) as session:
-        html = await fetch_text(session, f"https://enka.network/u/{uid}/")
+        html = await fetch_text(session, build_enka_url(game, uid))
         return parse_profile_data_from_html(html)
 
 
-async def get_player_info(uid: str) -> dict[str, Any]:
-    profile_data = await get_profile_data(uid)
+async def get_player_info(uid: str, game: str = "gs") -> dict[str, Any]:
+    profile_data = await get_profile_data(uid, game)
     player_info = profile_data.get("playerInfo")
 
     if not isinstance(player_info, dict):
@@ -191,20 +256,16 @@ async def get_player_info(uid: str) -> dict[str, Any]:
     return player_info
 
 
-async def getuid(uid: str) -> str:
+async def getuid(uid: str, game: str = "gs") -> str:
     try:
-        profile_data = await get_profile_data(uid)
+        profile_data = await get_profile_data(uid, game)
     except EnkaQueryError as exc:
         return str(exc)
 
     return format_profile_summary(profile_data)
 
 
-async def render_enka_page(uid: str) -> bytes:
-    require("nonebot_plugin_htmlrender")
-
-    from nonebot_plugin_htmlrender import get_new_page
-
+async def render_enka_page(uid: str, game: str = "gs") -> bytes:
     uid = uid.strip()
     if not uid:
         raise EnkaQueryError("UID 不能为空。")
@@ -215,48 +276,54 @@ async def render_enka_page(uid: str) -> bytes:
     ) as page:
         try:
             await page.goto(
-                f"https://enka.network/u/{uid}/",
+                build_enka_url(game, uid),
                 wait_until="load",
                 timeout=15000,
             )
         except Exception as e:
-            logger.warning(f"{e} UID {uid} 页面加载超时，尝试强行截图...")
+            logger.warning(
+                f"{e} {GAME_NAMES[game]} UID {uid} 页面加载超时，尝试强行截图..."
+            )
 
         await page.wait_for_timeout(4000)
 
         return await page.screenshot(full_page=True, type="png")
 
 
-try:
-    uid_matcher = on_command("uid")
+uid_matcher = on_command("uid")
 
-    @uid_matcher.handle()
-    async def _handle(matcher: Matcher, uid_arg: Message = CommandArg()):
-        if uid_arg.extract_plain_text():
-            matcher.set_arg("uid", uid_arg)
 
-    @uid_matcher.got("uid", prompt="你想查询哪个原神 UID？")
-    async def _(bot: Bot, event: GroupMessageEvent, uid: str = ArgPlainText("uid")):
-        try:
-            await bot.call_api(
-                "set_msg_emoji_like",
-                group_id=event.group_id,
-                message_id=event.message_id,
-                emoji_id="318",
-                set=True,
-            )
-        except Exception as e:
-            logger.warning(e)
+@uid_matcher.handle()
+async def _handle(matcher: Matcher, uid_arg: Message = CommandArg()):
+    if uid_arg.extract_plain_text():
+        matcher.set_arg("uid", uid_arg)
 
-        try:
-            image = await render_enka_page(uid)
-            await uid_matcher.send(MessageSegment.image(image))
-            return
-        except Exception as e:
-            logger.opt(exception=e).warning("Enka 页面渲染失败，回退到文本解析")
 
-        info = await getuid(uid=uid)
-        await uid_matcher.send(info)
+@uid_matcher.got("uid", prompt="你想查询哪个 UID？")
+async def _(bot: Bot, event: GroupMessageEvent, uid_query: str = ArgPlainText("uid")):
+    try:
+        game, uid = parse_uid_query(uid_query)
+    except EnkaQueryError as exc:
+        await uid_matcher.send(str(exc))
+        return
 
-except ValueError:
-    uid_matcher = None
+    try:
+        await bot.call_api(
+            "set_msg_emoji_like",
+            group_id=event.group_id,
+            message_id=event.message_id,
+            emoji_id="318",
+            set=True,
+        )
+    except Exception as e:
+        logger.warning(e)
+
+    try:
+        image = await render_enka_page(uid, game)
+        await uid_matcher.send(MessageSegment.image(image))
+        return
+    except Exception as e:
+        logger.opt(exception=e).warning("Enka 页面渲染失败，回退到文本解析")
+
+    info = await getuid(uid=uid, game=game)
+    await uid_matcher.send(info)
